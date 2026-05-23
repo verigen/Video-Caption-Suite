@@ -119,7 +119,8 @@ class ProcessingManager:
                 self.state.stage = ProcessingStage.IDLE
                 await self.emit_progress()
 
-                print(f"[ProcessingManager] Connected to {settings.api_base_url}, model: {settings.api_model_name}")
+                resolved_model = self.model_info.get("model_id") if self.model_info else settings.api_model_name
+                print(f"[ProcessingManager] Connected to {settings.api_base_url}, model: {resolved_model}")
                 return True
 
             except Exception as e:
@@ -264,7 +265,14 @@ class ProcessingManager:
 
                 results.append(result)
 
-            self.state.stage = ProcessingStage.COMPLETE
+            succeeded = sum(1 for r in results if r["success"])
+            if succeeded == 0 and results:
+                self.state.stage = ProcessingStage.ERROR
+                if not self.state.error_message:
+                    self.state.error_message = "All videos failed to process"
+            else:
+                self.state.stage = ProcessingStage.COMPLETE
+                self.state.error_message = None
             self.state.substage = ProcessingSubstage.IDLE
             self.state.current_video = None
             self.is_processing = False

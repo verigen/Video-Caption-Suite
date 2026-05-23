@@ -30,13 +30,13 @@ const stages = computed<StageInfo[]>(() => {
     {
       key: 'extract',
       label: 'Extract Frames',
-      isComplete: currentStage === 'processing' && props.substage !== 'extracting_frames' && props.substage !== 'idle',
+      isComplete: currentStage === 'complete' || (currentStage === 'processing' && props.substage !== 'extracting_frames' && props.substage !== 'idle'),
       isActive: currentStage === 'processing' && props.substage === 'extracting_frames',
     },
     {
       key: 'encode',
       label: 'Encode',
-      isComplete: currentStage === 'processing' && (props.substage === 'generating' || currentStage === 'complete'),
+      isComplete: currentStage === 'complete' || (currentStage === 'processing' && props.substage === 'generating'),
       isActive: currentStage === 'processing' && props.substage === 'encoding',
     },
     {

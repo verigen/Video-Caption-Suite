@@ -4,6 +4,7 @@ All settings in one place for easy tuning
 """
 
 import json
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -142,6 +143,11 @@ API_KEY = ""
 
 # Default model name as reported by the server's /v1/models endpoint
 API_MODEL_NAME = ""
+
+# Log every API request/response to a file.
+# Enable by setting the env var:  LOG_API_CALLS=1  (or "true" / "yes")
+LOG_API_CALLS: bool = os.getenv("LOG_API_CALLS", "").lower() in ("1", "true", "yes")
+API_LOG_FILE: Path = PROJECT_ROOT / "api_calls.log"
 
 # =============================================================================
 # INFERENCE SETTINGS

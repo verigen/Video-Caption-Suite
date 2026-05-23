@@ -9,11 +9,23 @@ clear_cache) stays identical so processing.py needs no changes.
 import base64
 import io
 import time
+from datetime import datetime
 from typing import Dict, Any, Tuple, List, Optional
 
 from openai import OpenAI
 
 from backend import config
+
+
+def _log_api(entry: str) -> None:
+    """Append a log entry to api_calls.log (only when LOG_API_CALLS is set)."""
+    if not config.LOG_API_CALLS:
+        return
+    try:
+        with open(config.API_LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(entry)
+    except OSError as e:
+        print(f"[Model Loader] WARNING: could not write api log: {e}")
 
 
 def load_model(
@@ -101,18 +113,45 @@ def generate_caption(
         })
     content.append({"type": "text", "text": prompt})
 
-    t0 = time.time()
-    response = client.chat.completions.create(
-        model=api_model_name,
-        messages=[{"role": "user", "content": content}],
-        max_tokens=max_tokens,
-        temperature=temperature,
+    _log_api(
+        f"\n{'='*70}\n"
+        f"[{datetime.now().isoformat(timespec='seconds')}] REQUEST\n"
+        f"  model      : {api_model_name}\n"
+        f"  frames     : {len(images)}\n"
+        f"  max_tokens : {max_tokens}\n"
+        f"  temperature: {temperature}\n"
+        f"  prompt     : {prompt!r}\n"
     )
+
+    t0 = time.time()
+    try:
+        response = client.chat.completions.create(
+            model=api_model_name,
+            messages=[{"role": "user", "content": content}],
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+    except Exception as e:
+        elapsed = time.time() - t0
+        _log_api(
+            f"[{datetime.now().isoformat(timespec='seconds')}] ERROR after {elapsed:.2f}s\n"
+            f"  {type(e).__name__}: {e}\n"
+        )
+        raise
     elapsed = time.time() - t0
 
     output_text = response.choices[0].message.content or ""
     in_tokens = response.usage.prompt_tokens if response.usage else 0
     out_tokens = response.usage.completion_tokens if response.usage else 0
+
+    _log_api(
+        f"[{datetime.now().isoformat(timespec='seconds')}] RESPONSE\n"
+        f"  elapsed    : {elapsed:.2f}s\n"
+        f"  in_tokens  : {in_tokens}\n"
+        f"  out_tokens : {out_tokens}\n"
+        f"  tok/s      : {out_tokens / elapsed if elapsed > 0 else 0:.1f}\n"
+        f"  output     :\n{output_text}\n"
+    )
 
     return output_text.strip(), {
         "input_tokens": in_tokens,
