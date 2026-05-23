@@ -198,14 +198,10 @@ interface ProgressState {
   tokens_generated: number
   tokens_per_sec: number
   model_loaded: boolean
-  vram_used_gb: number
   substage: ProcessingSubstage
   substage_progress: number
   error_message: string | null
   elapsed_time: number
-  batch_size: number
-  workers: WorkerProgress[]
-  completed_videos: number
   // Transient completion event fields
   just_completed_video: string | null
   just_completed_caption_preview: string | null
@@ -221,9 +217,6 @@ isLoadingModel: boolean
 isProcessing: boolean
 isComplete: boolean
 hasError: boolean
-
-// Multi-GPU check
-isMultiGPU: boolean  // batch_size > 1
 
 // Overall progress (0-100)
 overallProgress: number
@@ -267,7 +260,7 @@ overallProgress(): number {
 
 ### settingsStore
 
-**Purpose:** Manages application settings and GPU info.
+**Purpose:** Manages application settings.
 
 **File:** `frontend/src/stores/settingsStore.ts`
 
@@ -276,7 +269,6 @@ overallProgress(): number {
 interface SettingsState {
   settings: Settings
   originalSettings: Settings  // For change detection
-  gpuInfo: SystemGPUInfo | null
   loading: boolean
   error: string | null
 }
@@ -286,17 +278,11 @@ interface SettingsState {
 ```typescript
 // Check if settings have been modified
 hasChanges: boolean
-
-// Multi-GPU availability
-hasMultiGPU: boolean
-
-// Maximum recommended batch size
-maxBatchSize: number
 ```
 
 **Actions:**
 ```typescript
-// Fetch settings and GPU info
+// Fetch settings from backend
 fetchSettings(): Promise<void>
 
 // Update settings (partial)
@@ -304,9 +290,6 @@ updateSettings(updates: Partial<Settings>): Promise<void>
 
 // Reset to defaults
 resetSettings(): Promise<void>
-
-// Fetch GPU information
-fetchGPUInfo(): Promise<void>
 ```
 
 ---
@@ -517,6 +500,9 @@ loadModel(): Promise<void>
 unloadModel(): Promise<void>
 getModelStatus(): Promise<ModelStatus>
 
+// Server model discovery
+getServerModels(): Promise<ServerModelsResponse>  // proxies GET /v1/models on the llama.cpp server
+
 // Processing
 startProcessing(videoNames?: string[]): Promise<void>
 stopProcessing(): Promise<void>
@@ -698,8 +684,8 @@ emit('view-caption', videoName: string)
 
 **Tabs:**
 1. **Directory** - Working folder selection and media type filters
-2. **Model** - Model selection and loading
-3. **Inference** - Max frames, tokens, temperature
+2. **Model** - API server URL, API key, model name with dynamic discovery via Refresh button
+3. **Inference** - Max frames, frame size, max tokens, temperature, include metadata
 4. **Prompt** - Custom captioning prompt
 
 ---
@@ -805,54 +791,34 @@ interface Props {
 ### settings.ts
 
 ```typescript
-type DeviceType = 'cuda' | 'cpu'
-type DtypeType = 'float16' | 'bfloat16' | 'float32'
-
 interface Settings {
-  model_preset: string        // preset id (see GET /api/model-presets)
-  model_id: string            // resolved HF repo id (derived from preset)
-  device: DeviceType
-  dtype: DtypeType
+  api_base_url: string      // OpenAI-compatible server URL (e.g. http://localhost:8080)
+  api_key: string           // API key (empty = local server, no auth)
+  api_model_name: string    // Model name as reported by the server's /v1/models
   max_frames: number
   frame_size: number
   max_tokens: number
   temperature: number
   prompt: string
   include_metadata: boolean
-  use_sage_attention: boolean
-  use_torch_compile: boolean
-  batch_size: number
-  vision_token_budget?: number | null   // Gemma 4 only (70/140/280/560/1120)
-  enable_thinking?: boolean | null      // Gemma 4 only
 }
 
-interface ModelPresetInfo {
-  id: string
-  model_id: string
-  label: string
-  description: string
-  approx_vram_gb: number
-  default_max_frames: number
-  default_frame_size: number
-  supports_multi_gpu_shard: boolean
-  quantization: string | null
-  supports_sage_attention: boolean
-  supports_torch_compile: boolean
-  is_video_native: boolean
+interface SettingsUpdate {
+  api_base_url?: string
+  api_key?: string
+  api_model_name?: string
+  max_frames?: number
+  frame_size?: number
+  max_tokens?: number
+  temperature?: number
+  prompt?: string
+  include_metadata?: boolean
 }
 
-interface GPUInfo {
-  index: number
-  name: string
-  memory_total_gb: number
-  memory_free_gb: number
-}
-
-interface SystemGPUInfo {
-  cuda_available: boolean
-  gpu_count: number
-  gpus: GPUInfo[]
-  max_batch_size: number
+// Returned by GET /api/server/models — proxies the llama.cpp server's /v1/models
+interface ServerModelsResponse {
+  models: string[]
+  api_base_url: string
 }
 ```
 
@@ -872,14 +838,6 @@ type ProcessingSubstage =
   | 'encoding'
   | 'generating'
 
-interface WorkerProgress {
-  worker_id: number
-  device: string
-  current_video: string | null
-  substage: ProcessingSubstage
-  substage_progress: number
-}
-
 interface ProgressState {
   stage: ProcessingStage
   current_video: string | null
@@ -889,13 +847,10 @@ interface ProgressState {
   tokens_generated: number
   tokens_per_sec: number
   model_loaded: boolean
-  vram_used_gb: number
   substage: ProcessingSubstage
   substage_progress: number
   error_message: string | null
   elapsed_time: number
-  batch_size: number
-  workers: WorkerProgress[]
 }
 ```
 
@@ -1152,10 +1107,11 @@ describe('settingsStore', () => {
     setActivePinia(createPinia())
   })
 
-  it('fetches settings from API', async () => {
+  it('initializes with default settings', () => {
     const store = useSettingsStore()
-    await store.fetchSettings()
-    expect(store.settings.model_id).toBeDefined()
+    expect(store.settings.api_base_url).toBe('http://localhost:8080')
+    expect(store.settings.api_model_name).toBe('')
+    expect(store.settings.max_frames).toBe(16)
   })
 })
 ```

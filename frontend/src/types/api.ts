@@ -30,10 +30,8 @@ export interface ProcessingResponse {
 export interface ModelStatus {
   loaded: boolean
   model_id: string | null
-  device: string | null
-  vram_used_gb: number
-  sage_attention_active: boolean
-  torch_compiled: boolean
+  api_base_url: string | null
+  available_models: string[]
 }
 
 export interface HealthResponse {

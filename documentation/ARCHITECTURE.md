@@ -29,8 +29,8 @@ This document describes the system architecture, data flow, and component relati
 │  └─────────────────────────────────────────────────────────────────────────┘│
 │                                    │                                         │
 │  ┌──────────────────┐  ┌──────────┴───────────┐  ┌───────────────────────┐  │
-│  │   schemas.py     │  │   processing.py      │  │    gpu_utils.py       │  │
-│  │   (Pydantic)     │  │   (ProcessingMgr)    │  │    (GPU detection)    │  │
+│  │   schemas.py     │  │   processing.py      │  │  resource_monitor.py  │  │
+│  │   (Pydantic)     │  │   (ProcessingMgr)    │  │  (CPU/RAM/GPU stats)  │  │
 │  └──────────────────┘  └──────────┬───────────┘  └───────────────────────┘  │
 └──────────────────────────────────┬──────────────────────────────────────────┘
                                    │
@@ -38,23 +38,24 @@ This document describes the system architecture, data flow, and component relati
 │                          CORE MODULES (backend/)                             │
 │  ┌─────────────────────────────┐  ┌─────────────────────────────────────┐   │
 │  │  backend/model_loader.py    │  │   backend/video_processor.py        │   │
-│  │  - Model download           │  │  - Frame extraction (OpenCV)        │   │
-│  │  - SageAttention            │  │  - Video metadata                   │   │
-│  │  - torch.compile            │  │  - Resize/sampling                  │   │
-│  │  - Caption generation       │  │  - Directory scanning               │   │
-│  │  - Memory management        │  │                                     │   │
+│  │  - OpenAI API client        │  │  - Frame extraction (OpenCV)        │   │
+│  │  - Base64 frame encoding    │  │  - Video metadata                   │   │
+│  │  - Caption generation       │  │  - Resize/sampling                  │   │
+│  │  - Server connectivity      │  │  - Directory scanning               │   │
 │  └──────────────┬──────────────┘  └─────────────────────────────────────┘   │
 └───────────────┼─────────────────────────────────────────────────────────────┘
                 │
+                │  HTTP (OpenAI-compatible API)
+                │
 ┌───────────────┴─────────────────────────────────────────────────────────────┐
-│                           GPU / MODEL LAYER                                  │
+│                         LLAMA.CPP SERVER                                     │
 │  ┌─────────────────────────────────────────────────────────────────────────┐│
-│  │                    PyTorch + Transformers                               ││
-│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐    ││
-│  │  │   cuda:0    │  │   cuda:1    │  │   cuda:2    │  │   cuda:N    │    ││
-│  │  │  Qwen3-VL   │  │  Qwen3-VL   │  │  Qwen3-VL   │  │  Qwen3-VL   │    ││
-│  │  │  (~16GB)    │  │  (~16GB)    │  │  (~16GB)    │  │  (~16GB)    │    ││
-│  │  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘    ││
+│  │  llama-server (or any OpenAI-compatible server)                         ││
+│  │  - POST /v1/chat/completions  (image_url content blocks)                ││
+│  │  - GET  /v1/models            (model discovery)                         ││
+│  │                                                                         ││
+│  │  Serves GGUF vision models (e.g. Qwen2.5-VL, LLaVA, etc.)             ││
+│  │  Runs on GPU — stats visible in ResourceMonitor via pynvml              ││
 │  └─────────────────────────────────────────────────────────────────────────┘│
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -69,7 +70,6 @@ Browser loads App.vue
         ├──► settingsStore.fetchSettings()
         │           │
         │           └──► GET /api/settings ──► Returns Settings JSON
-        │           └──► GET /api/system/gpu ──► Returns GPU info
         │
         ├──► videoStore.fetchVideos()
         │           │
@@ -96,7 +96,7 @@ User clicks "Process Selected Videos"
         │
         ▼
 POST /api/process/start
-  { video_names: [...], settings: {...} }
+  { video_names: [...] }
         │
         ▼
 ProcessingManager.process_videos()
@@ -108,24 +108,23 @@ ProcessingManager.process_videos()
         │    ▼              │
         │  load_model()     │
         │    │              │
-        │    ├─► Download from HuggingFace (if needed)
-        │    ├─► Apply SageAttention (if enabled)
-        │    ├─► Apply torch.compile (if enabled)
-        │    └─► Move to GPU(s)
+        │    └─► OpenAI(base_url=API_BASE_URL) client
+        │    └─► client.models.list() — connectivity check
         │              │
         └──────────────┘
                 │
                 ▼
-        For each video (parallel if multi-GPU):
+        For each video (sequential):
         ┌───────────────────────────────────────┐
         │  1. video_processor.process_video()   │
         │     └─► Extract frames (OpenCV)       │
         │     └─► Resize to frame_size          │
         │                                       │
         │  2. model_loader.generate_caption()   │
-        │     └─► Encode frames + prompt        │
-        │     └─► Model inference               │
-        │     └─► Decode output tokens          │
+        │     └─► Encode frames as JPEG/base64  │
+        │     └─► POST /v1/chat/completions     │
+        │         (image_url blocks + text)     │
+        │     └─► Return caption text           │
         │                                       │
         │  3. Save caption to .txt file         │
         │                                       │
@@ -139,43 +138,24 @@ ProcessingManager.process_videos()
         Stage = "complete"
 ```
 
-### 3. Multi-GPU Processing
+### 3. Model Discovery Flow
 
 ```
-batch_size > 1 detected
+User clicks "Refresh" in ModelSettings
         │
         ▼
-load_models_parallel()
-        │
-        ├──► Load model on cuda:0
-        ├──► Load model on cuda:1
-        └──► Load model on cuda:N
-             (Sequential to avoid OOM)
+GET /api/server/models
         │
         ▼
-_process_videos_parallel()
+backend proxies GET /v1/models
+to configured API_BASE_URL
         │
         ▼
-┌─────────────────────────────────────────────────────────┐
-│                    Video Queue                          │
-│  [video1, video2, video3, video4, video5, ...]         │
-└─────────────────────────────────────────────────────────┘
+Returns { models: ["model-name", ...], api_base_url: "..." }
         │
         ▼
-┌───────────────┬───────────────┬───────────────┐
-│   Worker 0    │   Worker 1    │   Worker N    │
-│   (cuda:0)    │   (cuda:1)    │   (cuda:N)    │
-├───────────────┼───────────────┼───────────────┤
-│ Pull video1   │ Pull video2   │ Pull video3   │
-│ Process...    │ Process...    │ Process...    │
-│ Complete      │ Complete      │ Complete      │
-│ Pull video4   │ Pull video5   │ Pull video6   │
-│ ...           │ ...           │ ...           │
-└───────────────┴───────────────┴───────────────┘
-        │
-        ▼
-All workers report progress independently
-Combined in progressStore for UI display
+Frontend shows dropdown of available models
+User selects or types model name manually
 ```
 
 ## Component Relationships
@@ -187,7 +167,6 @@ api.py
   ├── schemas.py (Pydantic models)
   ├── processing.py (ProcessingManager)
   ├── resource_monitor.py (ResourceMonitor)
-  ├── gpu_utils.py (GPU detection)
   └── config.py (settings)
 
 resource_monitor.py
@@ -202,13 +181,10 @@ processing.py
 
 model_loader.py
   ├── config.py
-  ├── model_presets.py (MODEL_PRESETS, resolve_preset)
-  ├── torch, transformers (external; AutoModelForImageTextToText, Gemma4ForConditionalGeneration)
-  ├── torchao (optional; int4 quantization for Gemma 4)
-  └── sageattention (optional)
-
-model_presets.py
-  └── (pure registry; no runtime dependencies)
+  ├── openai (OpenAI SDK — HTTP client for llama.cpp server)
+  ├── PIL (image encoding)
+  ├── base64, io (frame serialization)
+  └── time (latency measurement)
 
 video_processor.py
   ├── config.py
@@ -258,15 +234,15 @@ App.vue
   │     └── fetchVideos(), toggleSelection()
   │
   ├── useProgressStore()
-  │     ├── stage, progress, workers
+  │     ├── stage, progress
   │     └── updateFromWebSocket()
   │
   ├── useSettingsStore()
-  │     ├── settings, gpuInfo
+  │     ├── settings (api_base_url, api_model_name, ...)
   │     └── fetchSettings(), updateSettings()
   │
   └── useResourceStore()
-        └── snapshot (CPU, RAM, GPU metrics)
+        └── snapshot (CPU, RAM, GPU metrics via pynvml)
 
 Composables:
   useWebSocket() ──► progressStore.updateFromWebSocket()
@@ -286,64 +262,47 @@ Composables:
 - Progressive loading improves perceived performance
 - Reduces memory usage vs. single large response
 
-### 3. Model Caching
-- Models stay loaded between processing runs
-- Manual unload button for VRAM management
-- Cache key includes model_id + device + dtype
+### 3. OpenAI-Compatible API Client
+- All inference is delegated to an external llama.cpp server (or any OpenAI-compatible endpoint)
+- Frames are encoded as JPEG base64 and sent as `image_url` content blocks in the chat completions request
+- No local model weights, no CUDA driver dependency in the Python process
+- Server manages GPU memory; the backend is a thin HTTP client
 
-### 4. Multi-GPU Strategy
-- Each GPU gets independent model copy
-- Dynamic work distribution (no pre-assignment)
-- Sequential model loading to avoid OOM
+### 4. No In-Process GPU Memory Management
+- The backend never loads model weights, so there is no in-process VRAM to manage
+- `clear_cache()` in `model_loader.py` is a no-op (kept for call-site compatibility)
+- VRAM is managed entirely by the llama.cpp server process
 
 ### 5. Dedicated Resource Monitoring WebSocket
 - Separate `/ws/resources` endpoint from `/ws/progress` to decouple resource metrics from processing state
 - Uses `psutil` for CPU/RAM and `pynvml` (NVML) for per-GPU metrics (utilization, VRAM, temperature, power)
-- Pushes snapshots every 2 seconds for near-real-time visibility
+- Pushes snapshots every 2 seconds for near-real-time visibility while llama.cpp uses the GPU
 - Dependencies: `psutil>=5.9.0`, `nvidia-ml-py3>=7.352.0`
 
-### 6. Memory Management
-- Explicit `del` on model objects before `gc.collect()`
-- CUDA synchronization before `empty_cache()`
-- Clear all references before cache cleanup
-
-### 7. Model Preset Registry
-- `backend/model_presets.py` is the single source of truth for every supported
-  model: loader strategy, frame content-block format, quantization, capability
-  flags (SageAttention, torch.compile, multi-GPU sharding), and recommended
-  defaults. Adding a model is a new dict entry, not a new `if` branch.
-- `backend/model_loader.py` is a thin dispatcher over two strategies:
-  `image_text_to_text` (Qwen-VL family, one image block per frame) and
-  `gemma4` (single video block, optional TorchAo int4, optional
-  `device_map="auto"` sharding).
-- The settings POST handler in `backend/api.py` syncs `model_id` and enforces
-  preset-declared capability flags whenever `model_preset` changes — a UI
-  preset switch is a single action.
-- The free-text Model ID field is still accepted: if the user supplies a
-  custom `model_id` that does not match any preset, the default preset's
-  loader strategy is reused with the custom id substituted.
+### 6. Dynamic Model Discovery
+- `GET /api/server/models` proxies `GET /v1/models` to the configured API server
+- Users can refresh the model list at any time without restarting the backend
+- Model name can also be typed manually (free-form) if the server doesn't expose `/v1/models`
 
 ## File Locations and Line References
 
 | Component | File | Key Lines |
 |-----------|------|-----------|
 | FastAPI app creation | `backend/api.py` | 1-50 |
-| WebSocket handler (progress) | `backend/api.py` | 120-180 |
+| WebSocket handler (progress) | `backend/api.py` | ~120-180 |
 | WebSocket handler (resources) | `backend/api.py` | See `/ws/resources` |
+| Server models endpoint | `backend/api.py` | See `/api/server/models` |
 | Resource monitor | `backend/resource_monitor.py` | Full file |
-| Video endpoints | `backend/api.py` | 400-600 |
-| Processing endpoints | `backend/api.py` | 800-900 |
-| ProcessingManager | `backend/processing.py` | 85-250 |
-| Parallel processing | `backend/processing.py` | 264-464 |
-| Model preset registry | `backend/model_presets.py` | Full file |
-| Model loading (dispatcher) | `backend/model_loader.py` | `load_model()` |
-| Image-text-to-text strategy | `backend/model_loader.py` | `_load_image_text_to_text`, `_generate_image_text_to_text` |
-| Gemma 4 strategy | `backend/model_loader.py` | `_load_gemma4`, `_generate_gemma4` |
-| Memory cleanup | `backend/model_loader.py` | `clear_cache()` |
-| Frame extraction | `backend/video_processor.py` | 80-150 |
-| Vue root component | `frontend/src/App.vue` | 1-464 |
+| Video endpoints | `backend/api.py` | ~400-600 |
+| Processing endpoints | `backend/api.py` | ~800-900 |
+| ProcessingManager | `backend/processing.py` | Full file |
+| API client (load_model) | `backend/model_loader.py` | `load_model()` |
+| Caption generation | `backend/model_loader.py` | `generate_caption()` |
+| Frame extraction | `backend/video_processor.py` | ~80-150 |
+| Vue root component | `frontend/src/App.vue` | Full file |
 | Video store | `frontend/src/stores/videoStore.ts` | Full file |
 | Progress store | `frontend/src/stores/progressStore.ts` | Full file |
+| Settings store | `frontend/src/stores/settingsStore.ts` | Full file |
 | WebSocket composable | `frontend/src/composables/useWebSocket.ts` | Full file |
 
 ## Security Considerations
@@ -356,9 +315,9 @@ Composables:
 ## Performance Optimizations
 
 ### Model Inference
-1. **SageAttention**: 2-5x attention speedup (when compatible)
-2. **torch.compile**: JIT compilation for optimized inference
-3. **Batch Processing**: Parallel GPU utilization
+1. **GGUF Quantization**: llama.cpp serves quantized models (Q4, Q5, Q8 etc.) — far smaller VRAM footprint than FP16
+2. **Frame Count Control**: `max_frames` setting limits how many base64 image blocks are sent per request
+3. **JPEG Quality**: Frames are compressed to JPEG quality 85 before base64 encoding to reduce token count
 
 ### Media Loading
 4. **Single-Pass File Discovery**: `find_all_media()` in `backend/video_processor.py` uses `os.scandir()` (flat) or `os.walk()` (recursive) with pre-computed extension sets, replacing 16-28 per-extension `glob()` calls with a single directory traversal

@@ -3,19 +3,8 @@ Pydantic schemas for API request/response models
 """
 
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any, Literal
+from typing import Optional, List, Dict, Any
 from enum import Enum
-
-
-class DeviceType(str, Enum):
-    CUDA = "cuda"
-    CPU = "cpu"
-
-
-class DtypeType(str, Enum):
-    FLOAT16 = "float16"
-    BFLOAT16 = "bfloat16"
-    FLOAT32 = "float32"
 
 
 class ProcessingStage(str, Enum):
@@ -35,21 +24,16 @@ class ProcessingSubstage(str, Enum):
 
 class Settings(BaseModel):
     """Configuration settings for the captioner"""
-    model_preset: str = "qwen3-vl-8b"
-    model_id: str = "Qwen/Qwen3-VL-8B-Instruct"
-    device: DeviceType = DeviceType.CUDA
-    dtype: DtypeType = DtypeType.BFLOAT16
+    # API server connection
+    api_base_url: str = "http://localhost:8080"
+    api_key: str = ""
+    api_model_name: str = ""
+    # Inference
     max_frames: int = Field(default=16, ge=1, le=128)
     frame_size: int = Field(default=336, ge=224, le=672)
     max_tokens: int = Field(default=512, ge=64, le=2048)
     temperature: float = Field(default=0.3, ge=0.0, le=2.0)
-    use_sage_attention: bool = False
-    use_torch_compile: bool = True
     include_metadata: bool = False
-    batch_size: int = Field(default=1, ge=1, le=8)
-    # Gemma 4 specific — ignored by other presets.
-    vision_token_budget: Optional[int] = None  # 70/140/280/560/1120
-    enable_thinking: Optional[bool] = None
     prompt: str = """Describe this video in detail. Include:
 - The main subject and their actions
 - The setting and environment
@@ -60,30 +44,15 @@ class Settings(BaseModel):
 
 class SettingsUpdate(BaseModel):
     """Partial settings update"""
-    model_preset: Optional[str] = None
-    model_id: Optional[str] = None
-    device: Optional[DeviceType] = None
-    dtype: Optional[DtypeType] = None
+    api_base_url: Optional[str] = None
+    api_key: Optional[str] = None
+    api_model_name: Optional[str] = None
     max_frames: Optional[int] = Field(default=None, ge=1, le=128)
     frame_size: Optional[int] = Field(default=None, ge=224, le=672)
     max_tokens: Optional[int] = Field(default=None, ge=64, le=2048)
     temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
-    use_sage_attention: Optional[bool] = None
-    use_torch_compile: Optional[bool] = None
     include_metadata: Optional[bool] = None
-    batch_size: Optional[int] = Field(default=None, ge=1, le=8)
-    vision_token_budget: Optional[int] = None
-    enable_thinking: Optional[bool] = None
     prompt: Optional[str] = None
-
-
-class WorkerProgress(BaseModel):
-    """Progress for a single GPU worker"""
-    worker_id: int
-    device: str
-    current_video: Optional[str] = None
-    substage: ProcessingSubstage = ProcessingSubstage.IDLE
-    substage_progress: float = 0.0
 
 
 class ProgressUpdate(BaseModel):
@@ -95,14 +64,10 @@ class ProgressUpdate(BaseModel):
     tokens_generated: int = 0
     tokens_per_sec: float = 0.0
     model_loaded: bool = False
-    vram_used_gb: float = 0.0
     substage: ProcessingSubstage = ProcessingSubstage.IDLE
     substage_progress: float = Field(default=0.0, ge=0.0, le=1.0)
     error_message: Optional[str] = None
     elapsed_time: float = 0.0
-    # Multi-GPU fields
-    batch_size: int = 1
-    workers: List[WorkerProgress] = []
     completed_videos: int = 0
     # Transient completion event fields (set only on the message after a video finishes)
     just_completed_video: Optional[str] = None
@@ -163,36 +128,17 @@ class ProcessingResponse(BaseModel):
 
 
 class ModelStatus(BaseModel):
-    """Current model status"""
+    """Current model / API connection status"""
     loaded: bool = False
     model_id: Optional[str] = None
-    preset_id: Optional[str] = None
-    device: Optional[str] = None
-    vram_used_gb: float = 0.0
-    sage_attention_active: bool = False
-    torch_compiled: bool = False
+    api_base_url: Optional[str] = None
+    available_models: List[str] = []
 
 
-class ModelPresetInfo(BaseModel):
-    """Public metadata for a single model preset (dropdown entry)"""
-    id: str
-    model_id: str
-    label: str
-    description: str
-    approx_vram_gb: int
-    default_max_frames: int
-    default_frame_size: int
-    supports_multi_gpu_shard: bool
-    quantization: Optional[str] = None
-    supports_sage_attention: bool
-    supports_torch_compile: bool
-    is_video_native: bool
-
-
-class ModelPresetListResponse(BaseModel):
-    """Response for GET /api/model-presets"""
-    presets: List[ModelPresetInfo]
-    default_preset_id: str
+class ServerModelsResponse(BaseModel):
+    """Available models from the configured API server"""
+    models: List[str]
+    api_base_url: str
 
 
 class ErrorResponse(BaseModel):
@@ -249,15 +195,6 @@ class DirectoryBrowseResponse(BaseModel):
     current: str
     parent: Optional[str] = None
     directories: List[dict]  # List of {name: str, path: str}
-
-
-class GPUInfoResponse(BaseModel):
-    """GPU information for frontend"""
-    gpu_count: int
-    gpus: List[Dict[str, Any]]
-    cuda_available: bool
-    cuda_version: Optional[str] = None
-    max_batch_size: int
 
 
 # ============================================================================
@@ -346,7 +283,7 @@ class CorrelationResponse(BaseModel):
 
 
 # ============================================================================
-# Resource Monitoring Schemas
+# Resource Monitoring Schemas (pynvml-based, no torch dependency)
 # ============================================================================
 
 class GPUResourceMetrics(BaseModel):

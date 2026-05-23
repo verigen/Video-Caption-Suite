@@ -1,169 +1,122 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useSettingsStore } from '@/stores/settingsStore'
-import { useApi } from '@/composables/useApi'
-import { BaseInput, BaseSelect, BaseToggle } from '@/components/base'
-import type { DeviceType, DtypeType, ModelPresetInfo } from '@/types'
+import { BaseInput, BaseSelect } from '@/components/base'
 
 const settingsStore = useSettingsStore()
 const { settings } = storeToRefs(settingsStore)
-const api = useApi()
 
-const presets = ref<ModelPresetInfo[]>([])
-const defaultPresetId = ref<string>('qwen3-vl-8b')
-const showCustomId = ref(false)
+const availableModels = ref<string[]>([])
+const discovering = ref(false)
+const discoverError = ref<string | null>(null)
 
-const deviceOptions = [
-  { value: 'cuda', label: 'CUDA (GPU)' },
-  { value: 'cpu', label: 'CPU' },
-]
+const modelOptions = ref<{ value: string; label: string }[]>([])
 
-const dtypeOptions = [
-  { value: 'bfloat16', label: 'BFloat16 (Recommended)' },
-  { value: 'float16', label: 'Float16' },
-  { value: 'float32', label: 'Float32' },
-]
+async function discoverModels() {
+  discovering.value = true
+  discoverError.value = null
+  availableModels.value = []
+  modelOptions.value = []
 
-const visionTokenBudgetOptions = [
-  { value: '70', label: '70 tokens (fastest, coarse detail)' },
-  { value: '140', label: '140 tokens' },
-  { value: '280', label: '280 tokens (default)' },
-  { value: '560', label: '560 tokens (fine detail)' },
-  { value: '1120', label: '1120 tokens (OCR / dense text)' },
-]
+  // Save the current URL/key first so the backend uses what's currently typed
+  await settingsStore.updateSettings({
+    api_base_url: settings.value.api_base_url,
+    api_key: settings.value.api_key,
+  })
 
-const presetOptions = computed(() =>
-  presets.value.map(p => ({
-    value: p.id,
-    label: `${p.label} — ~${p.approx_vram_gb}GB VRAM`,
-  }))
-)
-
-const activePreset = computed<ModelPresetInfo | undefined>(() =>
-  presets.value.find(p => p.id === settings.value.model_preset)
-)
-
-const isGemmaPreset = computed(() => activePreset.value?.id?.startsWith('gemma-4') ?? false)
-
-onMounted(async () => {
-  const data = await api.getModelPresets()
-  if (data) {
-    presets.value = data.presets
-    defaultPresetId.value = data.default_preset_id
-  }
-})
-
-function updatePreset(value: string) {
-  settingsStore.setLocalSetting('model_preset', value)
-  const preset = presets.value.find(p => p.id === value)
-  if (preset) {
-    // Sync model_id so custom-ID field reflects the preset choice.
-    settingsStore.setLocalSetting('model_id', preset.model_id)
-    if (preset.supports_multi_gpu_shard) {
-      settingsStore.setLocalSetting('batch_size', 1)
+  try {
+    const response = await fetch('/api/server/models')
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}))
+      throw new Error(data.detail || `Server returned ${response.status}`)
     }
-    if (!preset.supports_torch_compile) {
-      settingsStore.setLocalSetting('use_torch_compile', false)
+    const data = await response.json()
+    availableModels.value = data.models ?? []
+    modelOptions.value = availableModels.value.map(m => ({ value: m, label: m }))
+
+    if (availableModels.value.length === 1 && !settings.value.api_model_name) {
+      settingsStore.setLocalSetting('api_model_name', availableModels.value[0])
     }
-    if (!preset.supports_sage_attention) {
-      settingsStore.setLocalSetting('use_sage_attention', false)
-    }
+  } catch (e) {
+    discoverError.value = e instanceof Error ? e.message : 'Failed to reach server'
+  } finally {
+    discovering.value = false
   }
 }
 
-function updateDevice(value: string) {
-  settingsStore.setLocalSetting('device', value as DeviceType)
+function updateApiBaseUrl(value: string | number) {
+  settingsStore.setLocalSetting('api_base_url', String(value))
 }
 
-function updateDtype(value: string) {
-  settingsStore.setLocalSetting('dtype', value as DtypeType)
+function updateApiKey(value: string | number) {
+  settingsStore.setLocalSetting('api_key', String(value))
 }
 
-function updateModelId(value: string | number) {
-  settingsStore.setLocalSetting('model_id', String(value))
+function updateApiModelName(value: string) {
+  settingsStore.setLocalSetting('api_model_name', value)
 }
 
-function updateVisionTokenBudget(value: string) {
-  settingsStore.setLocalSetting('vision_token_budget', parseInt(value, 10))
-}
-
-function updateEnableThinking(value: boolean) {
-  settingsStore.setLocalSetting('enable_thinking', value)
+function updateApiModelNameInput(value: string | number) {
+  settingsStore.setLocalSetting('api_model_name', String(value))
 }
 </script>
 
 <template>
   <div class="space-y-4">
-    <BaseSelect
-      :model-value="settings.model_preset"
-      :options="presetOptions"
-      label="Model"
-      hint="Pick a preset. Switching auto-syncs related settings."
-      @update:model-value="updatePreset"
+    <BaseInput
+      :model-value="settings.api_base_url"
+      label="API Server URL"
+      placeholder="http://localhost:8080"
+      hint="Base URL of your llama.cpp (or other OpenAI-compatible) server"
+      @update:model-value="updateApiBaseUrl"
     />
 
-    <p v-if="activePreset" class="text-sm text-dark-400 -mt-2">
-      {{ activePreset.description }}
-      <span v-if="activePreset.supports_multi_gpu_shard" class="block mt-1 text-primary-400">
-        Loads across all available GPUs — batch size forced to 1.
-      </span>
-      <span v-if="activePreset.quantization" class="block mt-1 text-primary-400">
-        Quantization: {{ activePreset.quantization }}
-      </span>
-    </p>
+    <BaseInput
+      :model-value="settings.api_key"
+      label="API Key"
+      placeholder="(leave empty for local servers)"
+      hint="Optional — most local servers don't require a key"
+      @update:model-value="updateApiKey"
+    />
 
-    <!-- Gemma 4 specific controls -->
-    <template v-if="isGemmaPreset">
-      <BaseSelect
-        :model-value="String(settings.vision_token_budget ?? 280)"
-        :options="visionTokenBudgetOptions"
-        label="Vision token budget (Gemma 4)"
-        hint="Soft tokens per image. Lower = faster, higher = finer detail."
-        @update:model-value="updateVisionTokenBudget"
-      />
+    <!-- Model selection: dropdown if models discovered, text input otherwise -->
+    <div class="space-y-2">
+      <div class="flex items-end gap-2">
+        <div class="flex-1">
+          <BaseSelect
+            v-if="modelOptions.length > 0"
+            :model-value="settings.api_model_name"
+            :options="modelOptions"
+            label="Model"
+            hint="Select a model from your server"
+            @update:model-value="updateApiModelName"
+          />
+          <BaseInput
+            v-else
+            :model-value="settings.api_model_name"
+            label="Model Name"
+            placeholder="e.g. qwen2.5-vl-7b"
+            hint="Name as reported by the server. Click Refresh to discover."
+            @update:model-value="updateApiModelNameInput"
+          />
+        </div>
 
-      <BaseToggle
-        :model-value="settings.enable_thinking ?? false"
-        label="Enable thinking mode"
-        description="Gemma 4 can perform step-by-step reasoning before answering. Slower, sometimes better quality."
-        @update:model-value="updateEnableThinking"
-      />
-    </template>
-
-    <!-- Custom model id escape hatch -->
-    <div>
-      <BaseToggle
-        :model-value="showCustomId"
-        label="Advanced: custom model ID"
-        description="Override the preset with an arbitrary HuggingFace repo id. Most users do not need this."
-        @update:model-value="(v) => (showCustomId = v)"
-      />
-      <div v-if="showCustomId" class="mt-3">
-        <BaseInput
-          :model-value="settings.model_id"
-          label="Model ID"
-          placeholder="org/model-name"
-          hint="Falls back to the default preset's loader strategy."
-          @update:model-value="updateModelId"
-        />
+        <button
+          class="mb-[1px] px-3 py-2 text-sm rounded-lg bg-dark-700 hover:bg-dark-600 text-dark-200 border border-dark-600 transition-colors disabled:opacity-50 whitespace-nowrap"
+          :disabled="discovering"
+          @click="discoverModels"
+        >
+          {{ discovering ? 'Checking…' : 'Refresh' }}
+        </button>
       </div>
+
+      <p v-if="discoverError" class="text-xs text-red-400">
+        {{ discoverError }}
+      </p>
+      <p v-else-if="availableModels.length > 0" class="text-xs text-dark-400">
+        {{ availableModels.length }} model{{ availableModels.length !== 1 ? 's' : '' }} available on server
+      </p>
     </div>
-
-    <BaseSelect
-      :model-value="settings.device"
-      :options="deviceOptions"
-      label="Device"
-      hint="GPU (CUDA) is strongly recommended"
-      @update:model-value="updateDevice"
-    />
-
-    <BaseSelect
-      :model-value="settings.dtype"
-      :options="dtypeOptions"
-      label="Precision"
-      hint="BFloat16 is fastest on modern GPUs"
-      @update:model-value="updateDtype"
-    />
   </div>
 </template>

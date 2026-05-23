@@ -2,7 +2,7 @@
 
 ## Overview
 
-Video Caption Suite is a professional-grade media captioning application that uses vision-language models to automatically generate detailed text descriptions for **videos and images**. It ships with a pluggable model-preset system; current presets include **Qwen3-VL-8B** (default, ~16 GB VRAM) and **Gemma 4 26B-A4B** (video-native MoE, available in bf16 full and int4-quantized flavors). It features a modern web interface, real-time progress tracking, multi-GPU support, and comprehensive optimization features.
+Video Caption Suite is a professional-grade media captioning application that generates detailed text descriptions for **videos and images** using any OpenAI-compatible vision-language model server (e.g. llama.cpp). It features a modern web interface, real-time progress tracking, GPU resource monitoring, and a prompt library.
 
 ## Table of Contents
 
@@ -20,8 +20,9 @@ Video Caption Suite is a professional-grade media captioning application that us
 
 - Python 3.10+
 - Node.js 18+
-- NVIDIA GPU with 16GB+ VRAM (for 8B model)
-- CUDA 11.8+ and cuDNN
+- A running **llama.cpp server** (or any OpenAI-compatible server) serving a vision-language model
+  - Example: `llama-server --model qwen2.5-vl-7b-q4_k_m.gguf --port 8080 --mmproj mmproj.gguf`
+  - Any server that implements `POST /v1/chat/completions` with `image_url` content blocks works
 
 ### Installation
 
@@ -41,9 +42,9 @@ cd ..
 
 ### Running the Application
 
-**Option 1: Using start script (Windows)**
-```batch
-start.bat
+**Option 1: Using start script**
+```bash
+./start.sh
 ```
 
 **Option 2: Manual start**
@@ -58,27 +59,38 @@ npm run dev
 
 Access the application at `http://localhost:5173`
 
+### First-time Setup
+
+1. Open the **Model** settings tab
+2. Enter your llama.cpp server URL (default: `http://localhost:8080`)
+3. Click **Refresh** to discover available models
+4. Select the model you want to use (or type its name manually)
+5. Click **Load Model** to verify connectivity
+6. Set your working directory in the **Directory** tab
+
 ## Tech Stack
 
 | Layer | Technology |
 |-------|------------|
-| Backend | Python 3.10+, FastAPI, PyTorch, Transformers |
+| Backend | Python 3.10+, FastAPI, OpenAI SDK |
 | Frontend | Vue 3, TypeScript, Pinia, Tailwind CSS, Vite |
-| Model | Qwen3-VL-8B-Instruct (Vision-Language Model) |
-| Video Processing | OpenCV |
+| Inference | llama.cpp (or any OpenAI-compatible server) |
+| Video Processing | OpenCV, Pillow |
 | Communication | REST API + WebSocket |
 
 ## Key Features
 
 - **Video & Image Captioning**: Generate detailed descriptions for both videos and images
-- **Media Type Filters**: Toggle between videos, images, or both in directory settings
-- **Multi-GPU Support**: Process media in parallel across multiple GPUs
+- **OpenAI-Compatible API**: Works with any llama.cpp server or compatible endpoint
+- **Dynamic Model Discovery**: Refresh button fetches available models from your server
+- **GGUF Model Support**: Use quantized models (Q4, Q5, Q8) — far lower VRAM than FP16
 - **Real-time Progress**: WebSocket-based live progress updates
-- **Custom Prompts**: Save and reuse captioning prompts
+- **GPU Resource Monitor**: Live CPU/RAM/GPU utilization via pynvml (no torch dependency)
+- **Custom Prompts**: Save and reuse captioning prompts in a built-in library
 - **Batch Processing**: Process entire folders of media files
 - **Video Preview**: Hover to preview videos before processing
 - **Thumbnail Caching**: Fast grid loading with cached thumbnails
-- **Memory Management**: Proper VRAM cleanup on model unload
+- **Word Analytics**: Frequency analysis, n-grams, and word correlations across captions
 
 ### Supported Formats
 
@@ -92,13 +104,13 @@ Access the application at `http://localhost:5173`
 ```
 Video Caption Suite/
 ├── backend/
-│   ├── api.py              # FastAPI server (962 lines)
+│   ├── api.py              # FastAPI server
 │   ├── schemas.py          # Pydantic models
 │   ├── processing.py       # Processing orchestration
 │   ├── config.py           # Backend configuration
-│   ├── model_loader.py     # Model lifecycle management
-│   ├── video_processor.py  # Video/image processing
-│   └── gpu_utils.py        # GPU detection
+│   ├── model_loader.py     # OpenAI API client + caption generation
+│   ├── video_processor.py  # Video/image frame extraction
+│   └── resource_monitor.py # CPU/RAM/GPU metrics (pynvml)
 ├── frontend/
 │   ├── src/
 │   │   ├── App.vue         # Root component
@@ -114,20 +126,17 @@ Video Caption Suite/
 
 ## Hardware Requirements
 
-### Minimum (Single GPU)
-- NVIDIA GPU: 16GB VRAM (RTX 4080, A4000, etc.)
-- System RAM: 32GB
-- Storage: 50GB (for model cache)
+The backend itself has no GPU requirement — all inference is handled by the llama.cpp server process.
 
-### Recommended (Multi-GPU)
-- 2-4x NVIDIA GPUs: 16GB+ VRAM each
-- System RAM: 64GB+
-- NVMe SSD for faster model loading
+### llama.cpp Server (Inference)
+- NVIDIA GPU with enough VRAM for your chosen GGUF model:
+  - Q4_K_M quantization: ~5–6 GB VRAM for a 7B model
+  - Q8_0 quantization: ~8–9 GB VRAM for a 7B model
+  - A 16 GB card handles most 7B–13B GGUF models comfortably
 
-### Quantization Options (Reduced VRAM)
-- Q8_0: ~9GB VRAM
-- Q4_K_M: ~5GB VRAM
-- (Requires GGUF backend - see ARCHITECTURE.md)
+### Backend Host
+- RAM: 4 GB minimum (no model weights stored in Python process)
+- Storage: Space for media files and generated caption files
 
 ## Support
 

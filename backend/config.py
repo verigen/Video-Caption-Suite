@@ -12,11 +12,7 @@ from typing import Optional
 # =============================================================================
 
 PROJECT_ROOT = Path(__file__).parent.parent
-MODELS_DIR = PROJECT_ROOT / "models"
 USER_CONFIG_FILE = PROJECT_ROOT / "user_config.json"
-
-# Create directories if they don't exist
-MODELS_DIR.mkdir(exist_ok=True)
 
 # =============================================================================
 # WORKING DIRECTORY (User-configurable)
@@ -135,21 +131,17 @@ def set_include_images(include: bool) -> None:
 _load_user_config()
 
 # =============================================================================
-# MODEL SETTINGS
+# API SERVER SETTINGS
 # =============================================================================
 
-# Default preset id (see backend/model_presets.py). The frontend model
-# dropdown is populated from that registry; MODEL_ID is kept as the resolved
-# HF repo id for scripts that load the loader directly.
-DEFAULT_PRESET_ID = "qwen3-vl-8b"
-MODEL_ID = "Qwen/Qwen3-VL-8B-Instruct"
+# Base URL of the OpenAI-compatible API server (e.g. llama.cpp server)
+API_BASE_URL = "http://localhost:8080"
 
-# Device: "cuda", "cpu", or "auto"
-DEVICE = "cuda"
+# API key — leave empty for local servers that don't require authentication
+API_KEY = ""
 
-# Precision: "float16", "bfloat16", or "float32"
-# bfloat16 is often faster on newer GPUs (A6000, RTX 40xx, etc.)
-DTYPE = "bfloat16"
+# Default model name as reported by the server's /v1/models endpoint
+API_MODEL_NAME = ""
 
 # =============================================================================
 # INFERENCE SETTINGS
@@ -178,19 +170,6 @@ DEFAULT_PROMPT = """Describe this video in detail. Include:
 - Any notable objects or elements
 - The overall mood or atmosphere
 - Any text visible in the video"""
-
-# =============================================================================
-# OPTIMIZATION FLAGS
-# =============================================================================
-
-# Enable SageAttention (2-5x speedup if triton is installed)
-# NOTE: SageAttention is NOT compatible with Qwen3-VL due to non-standard head dimensions (80)
-# SageAttention only supports head dims of 64, 96, 128
-USE_SAGE_ATTENTION = False
-
-# Enable torch.compile (10-30% speedup after warmup)
-# First inference will be slower due to JIT compilation
-USE_TORCH_COMPILE = True
 
 # =============================================================================
 # OUTPUT SETTINGS

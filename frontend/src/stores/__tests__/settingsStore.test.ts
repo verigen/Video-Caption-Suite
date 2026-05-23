@@ -3,7 +3,7 @@ import { setActivePinia, createPinia } from 'pinia'
 import { useSettingsStore } from '../settingsStore'
 
 // Mock fetch
-global.fetch = vi.fn()
+(globalThis as any).fetch = vi.fn()
 
 describe('settingsStore', () => {
   beforeEach(() => {
@@ -14,12 +14,10 @@ describe('settingsStore', () => {
   it('initializes with default settings', () => {
     const store = useSettingsStore()
 
-    expect(store.settings.model_id).toBe('Qwen/Qwen3-VL-8B-Instruct')
-    expect(store.settings.device).toBe('cuda')
-    expect(store.settings.dtype).toBe('bfloat16')
+    expect(store.settings.api_base_url).toBe('http://localhost:8080')
+    expect(store.settings.api_model_name).toBe('')
     expect(store.settings.max_frames).toBe(16)
     expect(store.settings.temperature).toBe(0.3)
-    expect(store.settings.use_torch_compile).toBe(true)
   })
 
   it('computes hasChanges correctly', () => {
@@ -42,26 +40,24 @@ describe('settingsStore', () => {
     store.setLocalSetting('temperature', 0.7)
     expect(store.settings.temperature).toBe(0.7)
 
-    store.setLocalSetting('use_torch_compile', false)
-    expect(store.settings.use_torch_compile).toBe(false)
+    store.setLocalSetting('api_model_name', 'qwen2.5-vl-7b')
+    expect(store.settings.api_model_name).toBe('qwen2.5-vl-7b')
   })
 
   it('fetchSettings makes API call', async () => {
     const mockSettings = {
-      model_id: 'test/model',
-      device: 'cuda',
-      dtype: 'float16',
+      api_base_url: 'http://localhost:8080',
+      api_key: '',
+      api_model_name: 'qwen2.5-vl-7b',
       max_frames: 8,
       frame_size: 224,
       max_tokens: 256,
       temperature: 0.5,
-      use_sage_attention: false,
-      use_torch_compile: false,
       include_metadata: true,
       prompt: 'Test prompt',
     }
 
-    ;(global.fetch as any).mockResolvedValueOnce({
+    ;((globalThis as any).fetch as any).mockResolvedValueOnce({
       ok: true,
       json: () => Promise.resolve(mockSettings),
     })
@@ -69,13 +65,13 @@ describe('settingsStore', () => {
     const store = useSettingsStore()
     await store.fetchSettings()
 
-    expect(global.fetch).toHaveBeenCalledWith('/api/settings')
-    expect(store.settings.model_id).toBe('test/model')
+    expect((globalThis as any).fetch).toHaveBeenCalledWith('/api/settings')
+    expect(store.settings.api_model_name).toBe('qwen2.5-vl-7b')
     expect(store.settings.max_frames).toBe(8)
   })
 
   it('fetchSettings handles errors', async () => {
-    ;(global.fetch as any).mockResolvedValueOnce({
+    ;((globalThis as any).fetch as any).mockResolvedValueOnce({
       ok: false,
     })
 
@@ -87,11 +83,11 @@ describe('settingsStore', () => {
 
   it('updateSettings makes POST request', async () => {
     const mockResponse = {
-      model_id: 'Qwen/Qwen3-VL-8B-Instruct',
+      api_model_name: 'qwen2.5-vl-7b',
       max_frames: 32,
     }
 
-    ;(global.fetch as any).mockResolvedValueOnce({
+    ;((globalThis as any).fetch as any).mockResolvedValueOnce({
       ok: true,
       json: () => Promise.resolve(mockResponse),
     })
@@ -99,7 +95,7 @@ describe('settingsStore', () => {
     const store = useSettingsStore()
     await store.updateSettings({ max_frames: 32 })
 
-    expect(global.fetch).toHaveBeenCalledWith('/api/settings', {
+    expect((globalThis as any).fetch).toHaveBeenCalledWith('/api/settings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ max_frames: 32 }),
@@ -107,23 +103,21 @@ describe('settingsStore', () => {
   })
 
   it('resetSettings makes POST to reset endpoint', async () => {
-    const defaultSettings = {
-      model_id: 'Qwen/Qwen3-VL-8B-Instruct',
-      device: 'cuda',
-      dtype: 'bfloat16',
+    const defaultSettingsResponse = {
+      api_base_url: 'http://localhost:8080',
+      api_key: '',
+      api_model_name: '',
       max_frames: 16,
       frame_size: 336,
       max_tokens: 512,
       temperature: 0.3,
-      use_sage_attention: false,
-      use_torch_compile: true,
       include_metadata: false,
       prompt: 'Default prompt',
     }
 
-    ;(global.fetch as any).mockResolvedValueOnce({
+    ;((globalThis as any).fetch as any).mockResolvedValueOnce({
       ok: true,
-      json: () => Promise.resolve(defaultSettings),
+      json: () => Promise.resolve(defaultSettingsResponse),
     })
 
     const store = useSettingsStore()
@@ -134,14 +128,14 @@ describe('settingsStore', () => {
     // Then reset
     await store.resetSettings()
 
-    expect(global.fetch).toHaveBeenCalledWith('/api/settings/reset', {
+    expect((globalThis as any).fetch).toHaveBeenCalledWith('/api/settings/reset', {
       method: 'POST',
     })
     expect(store.settings.max_frames).toBe(16)
   })
 
   it('loading state is managed correctly', async () => {
-    ;(global.fetch as any).mockImplementation(
+    ;((globalThis as any).fetch as any).mockImplementation(
       () => new Promise((resolve) => setTimeout(() => resolve({
         ok: true,
         json: () => Promise.resolve({}),

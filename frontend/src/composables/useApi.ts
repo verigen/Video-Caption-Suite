@@ -8,7 +8,7 @@ import type {
   UpdatePromptRequest,
   DirectoryResponse,
   DirectoryBrowseResponse,
-  ModelPresetListResponse
+  ServerModelsResponse,
 } from '@/types'
 
 export function useApi() {
@@ -71,8 +71,8 @@ export function useApi() {
     return request<ModelStatus>('/api/model/status')
   }
 
-  async function getModelPresets(): Promise<ModelPresetListResponse | null> {
-    return request<ModelPresetListResponse>('/api/model-presets')
+  async function getServerModels(): Promise<ServerModelsResponse | null> {
+    return request<ServerModelsResponse>('/api/server/models')
   }
 
   // Processing operations
@@ -162,7 +162,7 @@ export function useApi() {
     loadModel,
     unloadModel,
     getModelStatus,
-    getModelPresets,
+    getServerModels,
     startProcessing,
     stopProcessing,
     checkHealth,

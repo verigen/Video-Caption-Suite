@@ -29,30 +29,19 @@ Retrieve current application settings.
 **Response:**
 ```json
 {
-  "model_preset": "qwen3-vl-8b",
-  "model_id": "Qwen/Qwen3-VL-8B-Instruct",
-  "device": "cuda",
-  "dtype": "bfloat16",
-  "max_frames": 32,
+  "api_base_url": "http://localhost:8080",
+  "api_key": "",
+  "api_model_name": "qwen2.5-vl-7b",
+  "max_frames": 16,
   "frame_size": 336,
   "max_tokens": 512,
   "temperature": 0.3,
   "prompt": "Describe this video in detail...",
-  "include_metadata": false,
-  "use_sage_attention": false,
-  "use_torch_compile": true,
-  "batch_size": 1,
-  "vision_token_budget": null,
-  "enable_thinking": null
+  "include_metadata": false
 }
 ```
 
-Setting `model_preset` in a POST auto-syncs `model_id` and capability flags
-(SageAttention / torch.compile / batch_size) to what the preset supports.
-`vision_token_budget` and `enable_thinking` are Gemma-4 only; other presets
-ignore them. See `/api/model-presets` for the list of available presets.
-
-**File Reference:** `backend/api.py:650-670`
+**File Reference:** `backend/api.py`
 
 ---
 
@@ -63,76 +52,15 @@ Update settings (partial update supported).
 **Request Body:** (all fields optional)
 ```json
 {
-  "max_frames": 64,
-  "temperature": 0.5,
-  "batch_size": 2
+  "api_model_name": "qwen2.5-vl-7b",
+  "max_frames": 32,
+  "temperature": 0.5
 }
 ```
 
-**Response:**
-```json
-{
-  "model_id": "Qwen/Qwen3-VL-8B-Instruct",
-  "device": "cuda",
-  "dtype": "bfloat16",
-  "max_frames": 64,
-  "frame_size": 336,
-  "max_tokens": 512,
-  "temperature": 0.5,
-  "prompt": "...",
-  "include_metadata": false,
-  "use_sage_attention": false,
-  "use_torch_compile": true,
-  "batch_size": 2
-}
-```
+**Response:** Updated `Settings` object (same shape as GET).
 
-**File Reference:** `backend/api.py:673-710`
-
----
-
-### GET /api/model-presets
-
-List available model presets for the UI dropdown.
-
-**Response:**
-```json
-{
-  "presets": [
-    {
-      "id": "qwen3-vl-8b",
-      "model_id": "Qwen/Qwen3-VL-8B-Instruct",
-      "label": "Qwen3-VL 8B (default)",
-      "description": "Alibaba's 8B video-language model. Fast, proven, needs ~16GB VRAM.",
-      "approx_vram_gb": 16,
-      "default_max_frames": 16,
-      "default_frame_size": 336,
-      "supports_multi_gpu_shard": false,
-      "quantization": null,
-      "supports_sage_attention": false,
-      "supports_torch_compile": true,
-      "is_video_native": false
-    },
-    {
-      "id": "gemma-4-26b-a4b-int4",
-      "model_id": "google/gemma-4-26B-A4B-it",
-      "label": "Gemma 4 26B-A4B (video-native, int4)",
-      "description": "Same as above but int4-quantized via TorchAo. Needs ~15GB VRAM.",
-      "approx_vram_gb": 15,
-      "default_max_frames": 32,
-      "default_frame_size": 336,
-      "supports_multi_gpu_shard": false,
-      "quantization": "int4_torchao",
-      "supports_sage_attention": false,
-      "supports_torch_compile": false,
-      "is_video_native": true
-    }
-  ],
-  "default_preset_id": "qwen3-vl-8b"
-}
-```
-
-The source of truth for this list is `backend/model_presets.py:MODEL_PRESETS`.
+**File Reference:** `backend/api.py`
 
 ---
 
@@ -140,58 +68,25 @@ The source of truth for this list is `backend/model_presets.py:MODEL_PRESETS`.
 
 Reset all settings to defaults.
 
-**Response:**
-```json
-{
-  "model_id": "Qwen/Qwen3-VL-8B-Instruct",
-  "device": "cuda",
-  "dtype": "bfloat16",
-  "max_frames": 32,
-  "frame_size": 336,
-  "max_tokens": 512,
-  "temperature": 0.3,
-  "prompt": "Describe this video...",
-  "include_metadata": false,
-  "use_sage_attention": false,
-  "use_torch_compile": true,
-  "batch_size": 1
-}
-```
-
-**File Reference:** `backend/api.py:713-730`
+**Response:** Default `Settings` object.
 
 ---
 
-## System Endpoints
+### GET /api/server/models
 
-### GET /api/system/gpu
-
-Get GPU information and system capabilities.
+List models available on the currently configured API server. The backend proxies `GET /v1/models` from the server specified in `api_base_url`.
 
 **Response:**
 ```json
 {
-  "cuda_available": true,
-  "gpu_count": 2,
-  "gpus": [
-    {
-      "index": 0,
-      "name": "NVIDIA GeForce RTX 4090",
-      "memory_total_gb": 24.0,
-      "memory_free_gb": 22.5
-    },
-    {
-      "index": 1,
-      "name": "NVIDIA GeForce RTX 4090",
-      "memory_total_gb": 24.0,
-      "memory_free_gb": 23.8
-    }
-  ],
-  "max_batch_size": 2
+  "models": ["qwen2.5-vl-7b", "llava-1.6-mistral-7b"],
+  "api_base_url": "http://localhost:8080"
 }
 ```
 
-**File Reference:** `backend/api.py:580-600`
+**Error (502):** Server unreachable — check `api_base_url` setting.
+
+**File Reference:** `backend/api.py`
 
 ---
 
@@ -608,45 +503,41 @@ Delete a caption file.
 
 ### GET /api/model/status
 
-Get current model loading status.
+Get current API server connection status.
 
 **Response:**
 ```json
 {
   "loaded": true,
-  "model_id": "Qwen/Qwen3-VL-8B-Instruct",
-  "preset_id": "qwen3-vl-8b",
-  "device": "cuda:0",
-  "devices_loaded": ["cuda:0", "cuda:1"],
-  "vram_used_gb": 32.5,
-  "sage_attention_active": false,
-  "torch_compiled": true
+  "model_id": "qwen2.5-vl-7b",
+  "api_base_url": "http://localhost:8080",
+  "available_models": ["qwen2.5-vl-7b"]
 }
 ```
 
-**File Reference:** `backend/api.py:808-830`
+**File Reference:** `backend/api.py`
 
 ---
 
 ### POST /api/model/load
 
-Pre-load model to VRAM (optional - happens automatically on first process).
+Connect to the API server (optional — happens automatically on first process).
 
 **Response:**
 ```json
 {
   "success": true,
-  "message": "Model loaded successfully"
+  "message": "Connected to API server"
 }
 ```
 
-**File Reference:** `backend/api.py:833-860`
+**File Reference:** `backend/api.py`
 
 ---
 
 ### POST /api/model/unload
 
-Unload model and free VRAM.
+Disconnect from the API server.
 
 **Response:**
 ```json
@@ -659,7 +550,7 @@ Unload model and free VRAM.
 **Errors:**
 - `409 Conflict`: Processing in progress
 
-**File Reference:** `backend/api.py:777-788`
+**File Reference:** `backend/api.py`
 
 ---
 
@@ -729,31 +620,13 @@ Get current processing status.
   "tokens_generated": 1547,
   "tokens_per_sec": 45.2,
   "model_loaded": true,
-  "vram_used_gb": 16.8,
   "substage": "generating",
   "substage_progress": 0.65,
-  "elapsed_time": 125.4,
-  "batch_size": 2,
-  "workers": [
-    {
-      "worker_id": 0,
-      "device": "cuda:0",
-      "current_video": "video3.mp4",
-      "substage": "generating",
-      "substage_progress": 0.65
-    },
-    {
-      "worker_id": 1,
-      "device": "cuda:1",
-      "current_video": "video4.mp4",
-      "substage": "extracting_frames",
-      "substage_progress": 0.3
-    }
-  ]
+  "elapsed_time": 125.4
 }
 ```
 
-**File Reference:** `backend/api.py:893-910`
+**File Reference:** `backend/api.py`
 
 ---
 
@@ -923,12 +796,9 @@ const ws = new WebSocket('ws://localhost:8000/ws/progress');
     "tokens_generated": 256,
     "tokens_per_sec": 42.5,
     "model_loaded": true,
-    "vram_used_gb": 16.5,
     "substage": "generating",
     "substage_progress": 0.45,
     "elapsed_time": 30.2,
-    "batch_size": 1,
-    "workers": [],
     "just_completed_video": "video1.mp4",
     "just_completed_caption_preview": "A person walks through a sunlit park..."
   }

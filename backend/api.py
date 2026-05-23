@@ -24,20 +24,15 @@ from backend import config
 from backend.schemas import (
     Settings, SettingsUpdate, ProgressUpdate, VideoInfo, VideoListResponse,
     CaptionInfo, CaptionListResponse, ProcessingRequest, ProcessingResponse,
-    ModelStatus, ErrorResponse, ProcessingStage, GPUInfoResponse,
+    ModelStatus, ServerModelsResponse, ErrorResponse, ProcessingStage,
     SavedPrompt, PromptLibrary, CreatePromptRequest, UpdatePromptRequest,
     DirectoryRequest, DirectoryResponse, DirectoryBrowseResponse, MediaType,
-    ModelPresetInfo, ModelPresetListResponse,
     # Analytics schemas
     StopwordPreset, WordFrequencyRequest, WordFrequencyResponse, WordFrequencyItem,
     NgramRequest, NgramResponse, NgramItem,
     CorrelationRequest, CorrelationResponse, CorrelationItem,
     AnalyticsSummary,
 )
-from backend.model_presets import (
-    MODEL_PRESETS, DEFAULT_PRESET, list_presets_public, get_preset,
-)
-from backend.gpu_utils import get_system_info
 from backend.processing import ProcessingManager
 from backend.video_processor import find_videos, find_images, find_all_media, get_video_info
 
@@ -130,18 +125,7 @@ async def lifespan(app: FastAPI):
     print(f"[API] Settings loaded from {SETTINGS_FILE}" if SETTINGS_FILE.exists() else "[API] Using default settings")
     print(f"[API] Prompt library loaded with {len(_prompt_library.prompts)} prompts")
 
-    # Detect GPUs and validate batch_size
-    gpu_info = get_system_info()
-    print(f"[API] Detected {gpu_info['gpu_count']} GPU(s)")
-    for gpu in gpu_info['gpus']:
-        print(f"[API]   - {gpu['name']} ({gpu['memory_total_gb']:.1f} GB)")
-
-    # Validate batch_size against available GPUs
-    max_batch = gpu_info['max_batch_size']
-    if _settings.batch_size > max_batch:
-        print(f"[API] Adjusting batch_size from {_settings.batch_size} to {max_batch} (max available)")
-        _settings.batch_size = max_batch
-        save_settings(_settings)
+    print(f"[API] API server: {_settings.api_base_url or config.API_BASE_URL}")
 
     yield
 
@@ -181,29 +165,12 @@ async def get_settings():
 
 @app.post("/api/settings", response_model=Settings)
 async def update_settings(update: SettingsUpdate):
-    """Update settings (partial update supported).
-
-    If `model_preset` changes, we resync `model_id` and any preset-enforced
-    flags (sage/compile support, multi-GPU shard → batch_size=1) so that a
-    preset switch is a single action in the UI.
-    """
+    """Update settings (partial update supported)."""
     global _settings
 
     update_data = update.model_dump(exclude_unset=True)
     current_data = _settings.model_dump()
     current_data.update(update_data)
-
-    # Preset change → resync derived fields.
-    if "model_preset" in update_data:
-        preset = get_preset(update_data["model_preset"])
-        if preset is not None:
-            current_data["model_id"] = preset["model_id"]
-            if not preset["supports_sage_attention"]:
-                current_data["use_sage_attention"] = False
-            if not preset["supports_torch_compile"]:
-                current_data["use_torch_compile"] = False
-            if preset["supports_multi_gpu_shard"]:
-                current_data["batch_size"] = 1
 
     _settings = Settings(**current_data)
     save_settings(_settings)
@@ -220,24 +187,19 @@ async def reset_settings():
     return _settings
 
 
-@app.get("/api/model-presets", response_model=ModelPresetListResponse)
-async def get_model_presets():
-    """List available model presets for the UI dropdown."""
-    return ModelPresetListResponse(
-        presets=[ModelPresetInfo(**p) for p in list_presets_public()],
-        default_preset_id=DEFAULT_PRESET,
-    )
+@app.get("/api/server/models", response_model=ServerModelsResponse)
+async def get_server_models():
+    """List models available on the configured API server."""
+    from openai import OpenAI
+    api_base_url = _settings.api_base_url or config.API_BASE_URL
+    api_key = _settings.api_key or config.API_KEY or "none"
 
-
-# ============================================================================
-# System Endpoints
-# ============================================================================
-
-@app.get("/api/system/gpu", response_model=GPUInfoResponse)
-async def get_gpu_info():
-    """Get GPU information for frontend"""
-    info = get_system_info()
-    return GPUInfoResponse(**info)
+    try:
+        client = OpenAI(base_url=api_base_url, api_key=api_key)
+        models = [m.id for m in client.models.list().data]
+        return ServerModelsResponse(models=models, api_base_url=api_base_url)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Cannot reach API server at {api_base_url}: {e}")
 
 
 # ============================================================================
@@ -904,25 +866,23 @@ async def get_model_status():
 
 @app.post("/api/model/load")
 async def load_model():
-    """Pre-load the model"""
-    global _processing_task
-
+    """Connect to the API server"""
     if _processing_manager.is_processing:
         raise HTTPException(status_code=409, detail="Processing in progress")
 
     try:
         success = await _processing_manager.load_model(_settings)
         if success:
-            return {"success": True, "message": "Model loaded successfully"}
+            return {"success": True, "message": "Connected to API server"}
         else:
-            raise HTTPException(status_code=500, detail="Failed to load model")
+            raise HTTPException(status_code=500, detail="Failed to connect to API server")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/model/unload")
 async def unload_model():
-    """Unload the model to free VRAM"""
+    """Disconnect from the API server"""
     if _processing_manager.is_processing:
         raise HTTPException(status_code=409, detail="Processing in progress")
 
